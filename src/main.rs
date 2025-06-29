@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use csv::Writer;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
@@ -17,12 +17,6 @@ struct Args {
     cmd: Commands,
 }
 
-#[derive(Debug, Clone, ValueEnum)]
-enum OutputFormat {
-    Tsv,
-    Json,
-}
-
 #[derive(Debug, Parser)]
 enum Commands {
     /// Checks integrity and consistency of FASTQ files.
@@ -31,7 +25,7 @@ enum Commands {
     ///
     /// By default, the tool will exit immediately after the first error is found.
     /// Use --continue-on-error to check all files regardless of errors.
-    FastqCheck {
+    Fastq {
         /// A paired-end sample. Provide FQ1, FQ2, FQ1 length, and FQ2 length.
         /// Read Length: >0 for fixed, 0 for auto-detect (default), <0 to skip length check.
         /// Example: --paired fq1.fastq.gz fq2.fastq.gz 150 151
@@ -532,7 +526,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     match args.cmd {
-        Commands::FastqCheck {
+        Commands::Fastq {
             paired,
             single,
             output,

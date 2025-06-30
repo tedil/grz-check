@@ -471,12 +471,15 @@ fn run_check(
 }
 
 fn write_report(reports: &[PairReport], output_path: &Path) -> Result<()> {
-    let mut writer = Writer::from_path(output_path).with_context(|| {
-        format!(
-            "Failed to create report file at '{}'",
-            output_path.display()
-        )
-    })?;
+    let mut writer = csv::WriterBuilder::default()
+        .delimiter(b'\t')
+        .from_path(output_path)
+        .with_context(|| {
+            format!(
+                "Failed to create report file at '{}'",
+                output_path.display()
+            )
+        })?;
 
     writer.write_record(["path", "status", "num_reads", "read_length", "errors"])?;
 
@@ -633,7 +636,9 @@ mod tests {
     }
 
     fn read_report_status(report_path: &Path) -> Result<Vec<(String, String, String)>> {
-        let mut reader = csv::Reader::from_path(report_path)?;
+        let mut reader = csv::ReaderBuilder::default()
+            .delimiter(b'\t')
+            .from_path(&report_path)?;
         reader
             .records()
             .map(|r| {

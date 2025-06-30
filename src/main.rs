@@ -52,7 +52,7 @@ enum Commands {
         single: Vec<String>,
 
         /// Path to write the output TSV report.
-        #[arg(long, short, required = true)]
+        #[arg(long, required = true)]
         output: PathBuf,
 
         /// Continue processing all files even if an error is found.

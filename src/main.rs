@@ -16,8 +16,8 @@ struct Args {
     cmd: Commands,
 
     /// Flag to show progress bars during processing.
-    #[arg(long, default_value_t = false)]
-    show_progress: bool,
+    #[arg(long)]
+    show_progress: Option<bool>,
 }
 
 #[derive(Debug, Parser)]
@@ -331,7 +331,7 @@ fn run_check(
     single_raw: Vec<String>,
     output: &Path,
     continue_on_error: bool,
-    show_progress: bool,
+    show_progress: Option<bool>,
 ) -> Result<()> {
     if paired_raw.is_empty() && single_raw.is_empty() {
         anyhow::bail!(
@@ -342,8 +342,15 @@ fn run_check(
     let (jobs, total_bytes) = create_jobs_from_raw_input(&paired_raw, &single_raw)?;
 
     let mpb = MultiProgress::new();
-    if show_progress {
-        mpb.set_draw_target(ProgressDrawTarget::stderr());
+    match show_progress {
+        Some(true) => {
+            mpb.set_draw_target(ProgressDrawTarget::stderr());
+        }
+        Some(false) => {
+            mpb.set_draw_target(ProgressDrawTarget::hidden());
+        }
+        _ => { // keep default
+        }
     }
     let file_style = ProgressStyle::with_template(
         "{prefix:15.bold} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta}) {wide_msg}",
@@ -666,7 +673,7 @@ mod tests {
             "5".to_string(),
         ];
 
-        run_check(paired, vec![], &output, false)?;
+        run_check(paired, vec![], &output, false, Some(false))?;
 
         let statuses = read_report_status(&output)?;
         assert_eq!(statuses.len(), 2);
@@ -693,7 +700,7 @@ mod tests {
 
         let all_single = vec![fixture.path_str("badlen.fastq.gz"), "0".to_string()];
 
-        run_check(all_paired, all_single, &output, true)?;
+        run_check(all_paired, all_single, &output, true, Some(false))?;
 
         let statuses = read_report_status(&output)?;
         assert_eq!(statuses.len(), 5);

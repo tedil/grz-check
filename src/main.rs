@@ -60,6 +60,7 @@ enum Commands {
         continue_on_error: bool,
 
         /// Number of threads to use for processing.
+        #[arg(long)]
         threads: Option<usize>,
     },
 }

@@ -11,10 +11,10 @@ Usage: grz-check fastq [OPTIONS] --output <OUTPUT>
 
 Options:
       --paired <FQ1_PATH> <FQ2_PATH> <FQ1_LEN> <FQ2_LEN>
-          A paired-end sample. Provide FQ1, FQ2, FQ1 length, and FQ2 length. Read Length: >0 for fixed, 0 for auto-detect (default), <0 to skip length check. Example: --paired fq1.fastq.gz fq2.fastq.gz 150 151
+          A paired-end sample. Provide FQ1, FQ2, FQ1 length, and FQ2 length. Read Length: >0 for fixed, 0 for auto-detect, <0 to skip length check. Example: --paired fq1.fastq.gz fq2.fastq.gz 150 151
 
       --single <FQ_PATH> <READ_LEN>
-          A single-end sample. Provide the file path and read length. Read Length: >0 for fixed, 0 for auto-detect (default), <0 to skip length check. Example: --single sample.fastq.gz 0
+          A single-end sample. Provide the file path and read length. Read Length: >0 for fixed, 0 for auto-detect, <0 to skip length check. Example: --single sample.fastq.gz 0
 
   -o, --output <OUTPUT>
           Path to write the output TSV report

@@ -29,14 +29,14 @@ enum Commands {
     /// By default, the tool will exit immediately after the first error is found.
     /// Use --continue-on-error to check all files regardless of errors.
     Fastq {
-        /// A paired-end sample. Provide FQ1, FQ2, FQ1 length, and FQ2 length.
+        /// A paired-end sample. Provide FQ1, FQ2, FQ1 read length, and FQ2 read length.
         /// Read Length: >0 for fixed, 0 for auto-detect, <0 to skip length check.
         /// Example: --paired fq1.fastq.gz fq2.fastq.gz 150 151
         #[arg(
             long,
             action = clap::ArgAction::Append,
             num_args = 4,
-            value_names = ["FQ1_PATH", "FQ2_PATH", "FQ1_LEN", "FQ2_LEN"]
+            value_names = ["FQ1_PATH", "FQ2_PATH", "FQ1_READ_LEN", "FQ2_READ_LEN"]
         )]
         paired: Vec<String>,
 

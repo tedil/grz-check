@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use csv::Writer;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rayon::prelude::*;
 use serde::Serialize;
 use std::error::Error as StdError;
@@ -15,6 +14,10 @@ use std::path::{Path, PathBuf};
 struct Args {
     #[command(subcommand)]
     cmd: Commands,
+
+    /// Flag to show progress bars during processing.
+    #[arg(long, default_value_t = false)]
+    show_progress: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -325,6 +328,7 @@ fn run_check(
     single_raw: Vec<String>,
     output: &Path,
     continue_on_error: bool,
+    show_progress: bool,
 ) -> Result<()> {
     if paired_raw.is_empty() && single_raw.is_empty() {
         anyhow::bail!(
@@ -335,6 +339,9 @@ fn run_check(
     let (jobs, total_bytes) = create_jobs_from_raw_input(&paired_raw, &single_raw)?;
 
     let mpb = MultiProgress::new();
+    if show_progress {
+        mpb.set_draw_target(ProgressDrawTarget::stderr());
+    }
     let file_style = ProgressStyle::with_template(
         "{prefix:15.bold} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta}) {wide_msg}",
     )?.progress_chars("#>-");
@@ -539,7 +546,13 @@ fn main() -> Result<()> {
                     .build_global()
                     .context("Failed to set up Rayon thread pool")?;
             }
-            run_check(paired, single, &output, continue_on_error)?;
+            run_check(
+                paired,
+                single,
+                &output,
+                continue_on_error,
+                args.show_progress,
+            )?;
         }
     }
 

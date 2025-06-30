@@ -30,6 +30,7 @@ enum Commands {
     /// Use --continue-on-error to check all files regardless of errors.
     Fastq {
         /// A paired-end sample. Provide FQ1, FQ2, FQ1 read length, and FQ2 read length.
+        ///
         /// Read Length: >0 for fixed, 0 for auto-detect, <0 to skip length check.
         /// Example: --paired fq1.fastq.gz fq2.fastq.gz 150 151
         #[arg(
@@ -41,6 +42,7 @@ enum Commands {
         paired: Vec<String>,
 
         /// A single-end sample. Provide the file path and read length.
+        ///
         /// Read Length: >0 for fixed, 0 for auto-detect, <0 to skip length check.
         /// Example: --single sample.fastq.gz 0
         #[arg(

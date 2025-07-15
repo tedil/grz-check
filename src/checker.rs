@@ -22,12 +22,42 @@ pub struct Stats {
 pub struct FileReport {
     pub path: PathBuf,
     pub stats: Option<Stats>,
-    pub checksum: Option<String>,
+    pub sha256: Option<String>,
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
 }
 
 impl FileReport {
+    pub fn new(
+        path: &Path,
+        stats: Option<Stats>,
+        errors: Vec<String>,
+        warnings: Vec<String>,
+    ) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            stats,
+            sha256: None,
+            errors,
+            warnings,
+        }
+    }
+
+    pub fn new_with_error(path: &Path, error: String) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            stats: None,
+            sha256: None,
+            errors: vec![error],
+            warnings: vec![],
+        }
+    }
+
+    pub fn with_sha256(mut self, sha256: Option<String>) -> Self {
+        self.sha256 = sha256;
+        self
+    }
+
     pub fn is_ok(&self) -> bool {
         self.errors.is_empty()
     }
@@ -434,7 +464,7 @@ fn write_jsonl_report<W: Write>(results: &[CheckResult], writer: &mut W) -> anyh
                     status,
                     num_records: r1.stats.map(|s| s.num_records),
                     read_length: r1.stats.and_then(|s| s.read_length),
-                    checksum: r1.checksum.as_ref(),
+                    checksum: r1.sha256.as_ref(),
                     errors: fq1_errors,
                     warnings: &r1.warnings,
                 });
@@ -458,7 +488,7 @@ fn write_jsonl_report<W: Write>(results: &[CheckResult], writer: &mut W) -> anyh
                         status,
                         num_records: r2.stats.map(|s| s.num_records),
                         read_length: r2.stats.and_then(|s| s.read_length),
-                        checksum: r2.checksum.as_ref(),
+                        checksum: r2.sha256.as_ref(),
                         errors: fq2_errors,
                         warnings: &r2.warnings,
                     });
@@ -472,7 +502,7 @@ fn write_jsonl_report<W: Write>(results: &[CheckResult], writer: &mut W) -> anyh
                     status: if report.is_ok() { "OK" } else { "ERROR" },
                     num_records: report.stats.map(|s| s.num_records),
                     read_length: report.stats.and_then(|s| s.read_length),
-                    checksum: report.checksum.as_ref(),
+                    checksum: report.sha256.as_ref(),
                     errors: report.errors.clone(),
                     warnings: &report.warnings,
                 });
@@ -484,7 +514,7 @@ fn write_jsonl_report<W: Write>(results: &[CheckResult], writer: &mut W) -> anyh
                     path: &report.path,
                     status: if report.is_ok() { "OK" } else { "ERROR" },
                     num_records: report.stats.map(|s| s.num_records),
-                    checksum: report.checksum.as_ref(),
+                    checksum: report.sha256.as_ref(),
                     errors: &report.errors,
                     warnings: &report.warnings,
                 });
@@ -495,7 +525,7 @@ fn write_jsonl_report<W: Write>(results: &[CheckResult], writer: &mut W) -> anyh
                 let json_report = JsonReport::Raw(RawReport {
                     path: &report.path,
                     status: if report.is_ok() { "OK" } else { "ERROR" },
-                    checksum: report.checksum.as_ref(),
+                    checksum: report.sha256.as_ref(),
                     errors: &report.errors,
                     warnings: &report.warnings,
                 });

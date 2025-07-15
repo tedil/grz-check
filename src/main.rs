@@ -49,7 +49,7 @@ struct Args {
         num_args = 1,
         value_names = ["BAM_PATH"]
     )]
-    bam: Vec<String>,
+    bam: Vec<PathBuf>,
 
     /// A file for which to only calculate the SHA256 checksum, skipping all other validation.
     #[arg(
@@ -58,7 +58,7 @@ struct Args {
         num_args = 1,
         value_names = ["FILE_PATH"]
     )]
-    raw: Vec<String>,
+    raw: Vec<PathBuf>,
 
     /// Path to write the output TSV report.
     #[arg(long, required = true)]

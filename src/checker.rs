@@ -126,8 +126,8 @@ impl StdError for EarlyExitError {}
 fn create_jobs(
     paired_raw: &[String],
     single_raw: &[String],
-    bam_raw: &[String],
-    checksum_only_raw: &[String],
+    bam_raw: &[PathBuf],
+    raw: &[PathBuf],
 ) -> anyhow::Result<(Vec<Job>, u64)> {
     let mut jobs = Vec::new();
     let mut total_bytes: u64 = 0;
@@ -198,7 +198,7 @@ fn create_jobs(
         jobs.push(Job::Bam(BamCheckJob { path, size }));
     }
 
-    for path_str in checksum_only_raw {
+    for path_str in raw {
         let path = PathBuf::from(path_str);
         let size = fs::metadata(&path)
             .with_context(|| format!("Could not get metadata for {}", path.display()))?
@@ -213,23 +213,19 @@ fn create_jobs(
 pub fn run_check(
     paired_raw: Vec<String>,
     single_raw: Vec<String>,
-    bam_raw: Vec<String>,
-    checksum_only_raw: Vec<String>,
+    bam_raw: Vec<PathBuf>,
+    raw: Vec<PathBuf>,
     output: &Path,
     continue_on_error: bool,
     show_progress: Option<bool>,
 ) -> anyhow::Result<()> {
-    if paired_raw.is_empty()
-        && single_raw.is_empty()
-        && bam_raw.is_empty()
-        && checksum_only_raw.is_empty()
-    {
+    if paired_raw.is_empty() && single_raw.is_empty() && bam_raw.is_empty() && raw.is_empty() {
         anyhow::bail!(
             "No input files provided. Use --paired, --single, --bam, or --checksum-only."
         );
     }
 
-    let (jobs, total_bytes) = create_jobs(&paired_raw, &single_raw, &bam_raw, &checksum_only_raw)?;
+    let (jobs, total_bytes) = create_jobs(&paired_raw, &single_raw, &bam_raw, &raw)?;
 
     let mpb = MultiProgress::new();
     match show_progress {
@@ -545,7 +541,7 @@ mod tests {
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use noodles::bam;
-    use noodles::sam;
+
     use noodles::sam::alignment::io::Write as SamWrite;
     use noodles::sam::alignment::record::Flags;
     use noodles::sam::alignment::record::cigar::op::{Kind, Op};
@@ -805,7 +801,7 @@ mod tests {
             .build();
         let mut writer = bam::io::Writer::new(fs::File::create(&bam_path)?);
         writer.write_header(&header)?;
-        let record = sam::alignment::record_buf::Builder::default()
+        let record = record_buf::Builder::default()
             .set_name("r0")
             .set_flags(Flags::UNMAPPED)
             .set_sequence(b"ACGT".into())
@@ -816,12 +812,11 @@ mod tests {
         drop(writer);
 
         let output = dir.path().join("report.jsonl");
-        let bam_input = vec![bam_path.to_string_lossy().to_string()];
 
         run_check(
             vec![],
             vec![],
-            bam_input,
+            vec![bam_path],
             vec![],
             &output,
             true,
@@ -857,13 +852,12 @@ mod tests {
         let expected_checksum = "cf57fcf9d6d7fb8fd7d8c30527c8f51026aa1d99ad77cc769dd0c757d4fe8667";
 
         let output = dir.path().join("report.jsonl");
-        let checksum_input = vec![file_path.to_string_lossy().to_string()];
 
         run_check(
             vec![],
             vec![],
             vec![],
-            checksum_input,
+            vec![file_path],
             &output,
             true,
             Some(false),
@@ -889,15 +883,15 @@ mod tests {
         let mut writer = bam::io::Writer::new(fs::File::create(&bam_path)?);
         writer.write_header(&header)?;
 
-        let rec1 = sam::alignment::record_buf::Builder::default()
+        let rec1 = record_buf::Builder::default()
             .set_name("rec1")
             .set_flags(Flags::empty())
             .build();
-        let rec2 = sam::alignment::record_buf::Builder::default()
+        let rec2 = record_buf::Builder::default()
             .set_name("rec2_secondary")
             .set_flags(Flags::SECONDARY)
             .build();
-        let rec3 = sam::alignment::record_buf::Builder::default()
+        let rec3 = record_buf::Builder::default()
             .set_name("rec3_secondary")
             .set_flags(Flags::SECONDARY)
             .build();
@@ -908,11 +902,10 @@ mod tests {
         drop(writer);
 
         let output = dir.path().join("report.jsonl");
-        let bam_input = vec![bam_path.to_string_lossy().to_string()];
         run_check(
             vec![],
             vec![],
-            bam_input,
+            vec![bam_path],
             vec![],
             &output,
             true,
@@ -970,11 +963,10 @@ mod tests {
         drop(writer);
 
         let output = dir.path().join("report.jsonl");
-        let bam_input = vec![bam_path.to_string_lossy().to_string()];
         run_check(
             vec![],
             vec![],
-            bam_input,
+            vec![bam_path],
             vec![],
             &output,
             true,
@@ -1020,7 +1012,7 @@ mod tests {
             .set_flags(Flags::empty())
             .set_cigar(cigar_hard_clip)
             .build();
-        let rec4 = sam::alignment::record_buf::Builder::default()
+        let rec4 = record_buf::Builder::default()
             .set_name("rec4_secondary")
             .set_flags(Flags::SECONDARY)
             .build();
@@ -1032,11 +1024,10 @@ mod tests {
         drop(writer);
 
         let output = dir.path().join("report.jsonl");
-        let bam_input = vec![bam_path.to_string_lossy().to_string()];
         run_check(
             vec![],
             vec![],
-            bam_input,
+            vec![bam_path],
             vec![],
             &output,
             true,

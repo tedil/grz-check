@@ -1,7 +1,7 @@
 use crate::checks::bam::BamCheckJob;
-use crate::checks::checksum::RawJob;
 use crate::checks::fastq::{FastqCheckJob, ReadLengthCheck};
-use crate::checks::{bam, checksum, fastq};
+use crate::checks::raw::RawJob;
+use crate::checks::{bam, fastq, raw};
 use anyhow::Context;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -314,7 +314,7 @@ pub fn run_check(
                 let pb = m.add(ProgressBar::new(job.size));
                 pb.set_style(style.clone());
                 pb.set_prefix("Checking BAM");
-                let report = bam::check_single_bam(&job.path, &pb, main_pb);
+                let report = bam::check_bam(&job.path, &pb, main_pb);
                 if report.is_ok() {
                     pb.finish_with_message("✓ OK");
                 } else {
@@ -326,7 +326,7 @@ pub fn run_check(
                 let pb = m.add(ProgressBar::new(job.size));
                 pb.set_style(style.clone());
                 pb.set_prefix("Checksum");
-                let report = checksum::check_checksum_only(&job.path, &pb, main_pb);
+                let report = raw::check_raw(&job.path, &pb, main_pb);
                 if report.is_ok() {
                     pb.finish_with_message("✓ OK");
                 } else {

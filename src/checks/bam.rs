@@ -6,7 +6,7 @@ use noodles::sam::alignment::record::cigar::op::Kind;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-pub fn check_single_bam(path: &Path, file_pb: &ProgressBar, global_pb: &ProgressBar) -> FileReport {
+pub fn check_bam(path: &Path, file_pb: &ProgressBar, global_pb: &ProgressBar) -> FileReport {
     check_file(path, file_pb, global_pb, false, |reader| {
         let mut bam_reader = bam::io::Reader::new(BufReader::new(reader));
         let header = match bam_reader.read_header() {

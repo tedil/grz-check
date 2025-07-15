@@ -518,6 +518,8 @@ mod tests {
     use noodles::sam;
     use noodles::sam::alignment::io::Write as SamWrite;
     use noodles::sam::alignment::record::Flags;
+    use noodles::sam::alignment::record::cigar::op::{Kind, Op};
+    use noodles::sam::alignment::record_buf;
     use noodles::sam::alignment::record_buf::QualityScores;
     use noodles::sam::header::record::value::map::ReadGroup;
     use noodles::sam::{Header, header::record::value::Map};
@@ -845,6 +847,182 @@ mod tests {
             assert!(data.errors.is_empty());
         } else {
             panic!("Expected a Checksum report");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_bam_with_multiple_secondary_alignments() -> Result<()> {
+        let dir = tempdir()?;
+        let bam_path = dir.path().join("secondary.bam");
+        let header = Header::default();
+        let mut writer = bam::io::Writer::new(fs::File::create(&bam_path)?);
+        writer.write_header(&header)?;
+
+        let rec1 = sam::alignment::record_buf::Builder::default()
+            .set_name("rec1")
+            .set_flags(Flags::empty())
+            .build();
+        let rec2 = sam::alignment::record_buf::Builder::default()
+            .set_name("rec2_secondary")
+            .set_flags(Flags::SECONDARY)
+            .build();
+        let rec3 = sam::alignment::record_buf::Builder::default()
+            .set_name("rec3_secondary")
+            .set_flags(Flags::SECONDARY)
+            .build();
+
+        writer.write_alignment_record(&header, &rec1)?;
+        writer.write_alignment_record(&header, &rec2)?;
+        writer.write_alignment_record(&header, &rec3)?;
+        drop(writer);
+
+        let output = dir.path().join("report.jsonl");
+        let bam_input = vec![bam_path.to_string_lossy().to_string()];
+        run_check(
+            vec![],
+            vec![],
+            bam_input,
+            vec![],
+            &output,
+            true,
+            Some(false),
+        )?;
+
+        let records = read_jsonl_report(&output)?;
+        assert_eq!(records.len(), 1);
+        if let TestReport::Bam(data) = &records[0] {
+            assert_eq!(data.status, "OK");
+            assert_eq!(data.num_records, Some(3));
+            assert_eq!(data.warnings.len(), 1);
+            assert_eq!(
+                data.warnings[0],
+                "File contains 2 secondary alignment(s). First detected at record #2 ('rec2_secondary')."
+            );
+        } else {
+            panic!("Expected a BAM report");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_bam_with_multiple_hard_clipped_alignments() -> Result<()> {
+        let dir = tempdir()?;
+        let bam_path = dir.path().join("hardclip.bam");
+        let header = Header::default();
+        let mut writer = bam::io::Writer::new(fs::File::create(&bam_path)?);
+        writer.write_header(&header)?;
+
+        let cigar_hard_clip: record_buf::Cigar =
+            [Op::new(Kind::HardClip, 5), Op::new(Kind::Match, 4)]
+                .into_iter()
+                .collect();
+        let rec1 = record_buf::Builder::default()
+            .set_name("rec1_hardclip")
+            .set_flags(Flags::empty())
+            .set_cigar(cigar_hard_clip.clone())
+            .set_sequence(b"ACGT".into())
+            .build();
+        let rec2 = record_buf::Builder::default()
+            .set_name("rec2_noclip")
+            .set_flags(Flags::empty())
+            .build();
+        let rec3 = record_buf::Builder::default()
+            .set_name("rec3_hardclip")
+            .set_flags(Flags::empty())
+            .set_cigar(cigar_hard_clip)
+            .set_sequence(b"TGCA".into())
+            .build();
+
+        writer.write_alignment_record(&header, &rec1)?;
+        writer.write_alignment_record(&header, &rec2)?;
+        writer.write_alignment_record(&header, &rec3)?;
+        drop(writer);
+
+        let output = dir.path().join("report.jsonl");
+        let bam_input = vec![bam_path.to_string_lossy().to_string()];
+        run_check(
+            vec![],
+            vec![],
+            bam_input,
+            vec![],
+            &output,
+            true,
+            Some(false),
+        )?;
+
+        let records = read_jsonl_report(&output)?;
+        assert_eq!(records.len(), 1);
+        if let TestReport::Bam(data) = &records[0] {
+            assert_eq!(data.status, "OK");
+            assert_eq!(data.num_records, Some(3));
+            assert_eq!(data.warnings.len(), 1);
+            assert_eq!(
+                data.warnings[0],
+                "File contains 2 primary alignment(s) with hard-clipped bases. First detected at record #1 ('rec1_hardclip')."
+            );
+        } else {
+            panic!("Expected a BAM report");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_bam_with_mixed_warnings() -> Result<()> {
+        let dir = tempdir()?;
+        let bam_path = dir.path().join("mixed.bam");
+        let header = Header::default();
+        let mut writer = bam::io::Writer::new(fs::File::create(&bam_path)?);
+        writer.write_header(&header)?;
+
+        let cigar_hard_clip: record_buf::Cigar = [Op::new(Kind::HardClip, 5)].into_iter().collect();
+        let rec1 = record_buf::Builder::default()
+            .set_name("rec1_hardclip")
+            .set_flags(Flags::empty())
+            .set_cigar(cigar_hard_clip.clone())
+            .build();
+        let rec2 = record_buf::Builder::default()
+            .set_name("rec2_secondary")
+            .set_flags(Flags::SECONDARY)
+            .build();
+        let rec3 = record_buf::Builder::default()
+            .set_name("rec3_hardclip")
+            .set_flags(Flags::empty())
+            .set_cigar(cigar_hard_clip)
+            .build();
+        let rec4 = sam::alignment::record_buf::Builder::default()
+            .set_name("rec4_secondary")
+            .set_flags(Flags::SECONDARY)
+            .build();
+
+        writer.write_alignment_record(&header, &rec1)?;
+        writer.write_alignment_record(&header, &rec2)?;
+        writer.write_alignment_record(&header, &rec3)?;
+        writer.write_alignment_record(&header, &rec4)?;
+        drop(writer);
+
+        let output = dir.path().join("report.jsonl");
+        let bam_input = vec![bam_path.to_string_lossy().to_string()];
+        run_check(
+            vec![],
+            vec![],
+            bam_input,
+            vec![],
+            &output,
+            true,
+            Some(false),
+        )?;
+
+        let records = read_jsonl_report(&output)?;
+        assert_eq!(records.len(), 1);
+        if let TestReport::Bam(data) = &records[0] {
+            assert_eq!(data.status, "OK");
+            assert_eq!(data.num_records, Some(4));
+            assert_eq!(data.warnings.len(), 2);
+            assert!(data.warnings.contains(&"File contains 2 secondary alignment(s). First detected at record #2 ('rec2_secondary').".to_string()));
+            assert!(data.warnings.contains(&"File contains 2 primary alignment(s) with hard-clipped bases. First detected at record #1 ('rec1_hardclip').".to_string()));
+        } else {
+            panic!("Expected a BAM report");
         }
         Ok(())
     }

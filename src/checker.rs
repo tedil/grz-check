@@ -589,6 +589,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     #[derive(Deserialize, Debug, Clone)]
     #[serde(rename_all = "snake_case")]
     struct TestFastqReportData {
@@ -601,6 +602,7 @@ mod tests {
         warnings: Vec<String>,
     }
 
+    #[allow(dead_code)]
     #[derive(Deserialize, Debug, Clone)]
     #[serde(rename_all = "snake_case")]
     struct TestBamReportData {
@@ -612,6 +614,7 @@ mod tests {
         warnings: Vec<String>,
     }
 
+    #[allow(dead_code)]
     #[derive(Deserialize, Debug, Clone)]
     #[serde(rename_all = "snake_case")]
     struct TestRawReportData {

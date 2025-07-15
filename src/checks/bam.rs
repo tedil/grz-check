@@ -62,6 +62,13 @@ pub fn check_single_bam(path: &Path, file_pb: &ProgressBar, global_pb: &Progress
     }
 
     let mut num_records = 0;
+
+    let mut secondary_alignment_count: u64 = 0;
+    let mut first_secondary_warning_details: Option<(u64, String)> = None;
+
+    let mut hard_clip_count: u64 = 0;
+    let mut first_hard_clip_warning_details: Option<(u64, String)> = None;
+
     for (i, result) in reader.records().enumerate() {
         let record = match result {
             Ok(rec) => rec,
@@ -81,11 +88,13 @@ pub fn check_single_bam(path: &Path, file_pb: &ProgressBar, global_pb: &Progress
         num_records += 1;
 
         if record.flags().is_secondary() {
-            warnings.push(format!(
-                "Record #{} ('{}') is a secondary alignment.",
-                num_records,
-                record.name().map(|n| n.to_string()).unwrap_or_default()
-            ));
+            secondary_alignment_count += 1;
+            if first_secondary_warning_details.is_none() {
+                first_secondary_warning_details = Some((
+                    num_records,
+                    record.name().map(|n| n.to_string()).unwrap_or_default(),
+                ));
+            }
         }
 
         if !record.flags().is_secondary()
@@ -94,11 +103,13 @@ pub fn check_single_bam(path: &Path, file_pb: &ProgressBar, global_pb: &Progress
                 .iter()
                 .any(|op| op.is_ok_and(|op| op.kind() == Kind::HardClip))
         {
-            warnings.push(format!(
-                "Record #{} ('{}') is a primary alignment and contains hard-clipped bases.",
-                num_records,
-                record.name().map(|n| n.to_string()).unwrap_or_default()
-            ));
+            hard_clip_count += 1;
+            if first_hard_clip_warning_details.is_none() {
+                first_hard_clip_warning_details = Some((
+                    num_records,
+                    record.name().map(|n| n.to_string()).unwrap_or_default(),
+                ));
+            }
         }
     }
 
@@ -110,6 +121,20 @@ pub fn check_single_bam(path: &Path, file_pb: &ProgressBar, global_pb: &Progress
             errors: vec!["File is empty. Expected at least one record.".to_string()],
             warnings: vec![],
         };
+    }
+
+    if let Some((rec_num, read_name)) = first_secondary_warning_details {
+        warnings.push(format!(
+            "File contains {} secondary alignment(s). First detected at record #{} ('{}').",
+            secondary_alignment_count, rec_num, read_name
+        ));
+    }
+
+    if let Some((rec_num, read_name)) = first_hard_clip_warning_details {
+        warnings.push(format!(
+            "File contains {} primary alignment(s) with hard-clipped bases. First detected at record #{} ('{}').",
+            hard_clip_count, rec_num, read_name
+        ));
     }
 
     drop(reader);

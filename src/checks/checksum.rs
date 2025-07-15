@@ -76,7 +76,7 @@ pub fn check_checksum_only(
 }
 
 #[derive(Debug)]
-pub struct ChecksumOnlyJob {
+pub struct RawJob {
     pub path: PathBuf,
     pub size: u64,
 }

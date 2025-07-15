@@ -1,14 +1,15 @@
 use crate::checks::bam::BamCheckJob;
-use crate::checks::checksum::ChecksumOnlyJob;
+use crate::checks::checksum::RawJob;
 use crate::checks::fastq::{FastqCheckJob, ReadLengthCheck};
 use crate::checks::{bam, checksum, fastq};
 use anyhow::Context;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::error::Error as StdError;
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize)]
@@ -51,26 +52,32 @@ impl PairReport {
 enum Job {
     Fastq(FastqCheckJob),
     Bam(BamCheckJob),
-    ChecksumOnly(ChecksumOnlyJob),
+    Raw(RawJob),
 }
 
 #[derive(Debug)]
 enum CheckResult {
-    Paired(PairReport),
-    Single(FileReport),
+    PairedFastq(PairReport),
+    SingleFastq(FileReport),
+    Bam(FileReport),
+    Checksum(FileReport),
 }
 
 impl CheckResult {
     fn is_error(&self) -> bool {
         match self {
-            CheckResult::Paired(r) => r.is_error(),
-            CheckResult::Single(r) => !r.is_ok(),
+            CheckResult::PairedFastq(r) => r.is_error(),
+            CheckResult::SingleFastq(r) => !r.is_ok(),
+            CheckResult::Bam(r) => !r.is_ok(),
+            CheckResult::Checksum(r) => !r.is_ok(),
         }
     }
     fn primary_path(&self) -> &Path {
         match self {
-            CheckResult::Paired(r) => &r.fq1_report.path,
-            CheckResult::Single(r) => &r.path,
+            CheckResult::PairedFastq(r) => &r.fq1_report.path,
+            CheckResult::SingleFastq(r) => &r.path,
+            CheckResult::Bam(r) => &r.path,
+            CheckResult::Checksum(r) => &r.path,
         }
     }
 }
@@ -167,7 +174,7 @@ fn create_jobs(
             .with_context(|| format!("Could not get metadata for {}", path.display()))?
             .len();
         total_bytes += size;
-        jobs.push(Job::ChecksumOnly(ChecksumOnlyJob { path, size }));
+        jobs.push(Job::Raw(RawJob { path, size }));
     }
 
     Ok((jobs, total_bytes))
@@ -229,28 +236,23 @@ pub fn run_check(
                     fq1_pb.abandon_with_message("✗ ERROR");
                 }
 
-                let mut fq2_report = None;
                 if let (Some(fq2_path), Some(fq2_size), Some(fq2_len_check)) =
                     (&job.fq2, job.fq2_size, job.fq2_length_check)
                 {
                     let fq2_pb = m.add(ProgressBar::new(fq2_size));
                     fq2_pb.set_style(style.clone());
                     fq2_pb.set_prefix("Checking R2");
-                    let report =
+                    let fq2_report =
                         fastq::check_single_fastq(fq2_path, fq2_len_check, &fq2_pb, main_pb);
-                    if report.is_ok() {
+                    if fq2_report.is_ok() {
                         fq2_pb.finish_with_message("✓ OK");
                     } else {
                         fq2_pb.abandon_with_message("✗ ERROR");
                     }
-                    fq2_report = Some(report);
-                }
 
-                let mut pair_errors = Vec::new();
-                if let (Some(fq1_stats), Some(fq2_report_val)) =
-                    (fq1_report.stats, fq2_report.as_ref())
-                {
-                    if let Some(fq2_stats) = fq2_report_val.stats {
+                    let mut pair_errors = Vec::new();
+                    if let (Some(fq1_stats), Some(fq2_stats)) = (fq1_report.stats, fq2_report.stats)
+                    {
                         if fq1_stats.num_records != fq2_stats.num_records {
                             pair_errors.push(format!(
                                 "Mismatched read counts: {} vs {}",
@@ -269,12 +271,14 @@ pub fn run_check(
                             ));
                         }
                     }
+                    CheckResult::PairedFastq(PairReport {
+                        fq1_report,
+                        fq2_report: Some(fq2_report),
+                        pair_errors,
+                    })
+                } else {
+                    CheckResult::SingleFastq(fq1_report)
                 }
-                CheckResult::Paired(PairReport {
-                    fq1_report,
-                    fq2_report,
-                    pair_errors,
-                })
             }
             Job::Bam(job) => {
                 let pb = m.add(ProgressBar::new(job.size));
@@ -286,9 +290,9 @@ pub fn run_check(
                 } else {
                     pb.abandon_with_message("✗ ERROR");
                 }
-                CheckResult::Single(report)
+                CheckResult::Bam(report)
             }
-            Job::ChecksumOnly(job) => {
+            Job::Raw(job) => {
                 let pb = m.add(ProgressBar::new(job.size));
                 pb.set_style(style.clone());
                 pb.set_prefix("Checksum");
@@ -298,10 +302,13 @@ pub fn run_check(
                 } else {
                     pb.abandon_with_message("✗ ERROR");
                 }
-                CheckResult::Single(report)
+                CheckResult::Checksum(report)
             }
         }
     };
+
+    let mut output_writer = fs::File::create(output)
+        .with_context(|| format!("Failed to create report file at {}", output.display()))?;
 
     if continue_on_error {
         let reports: Vec<CheckResult> = jobs
@@ -310,7 +317,7 @@ pub fn run_check(
             .collect();
 
         let num_failed_jobs = reports.iter().filter(|r| r.is_error()).count();
-        write_report(&reports, output)?;
+        write_jsonl_report(&reports, &mut output_writer)?;
 
         if num_failed_jobs > 0 {
             main_pb.abandon_with_message(format!(
@@ -339,7 +346,7 @@ pub fn run_check(
 
         match result {
             Ok(reports) => {
-                write_report(&reports, output)?;
+                write_jsonl_report(&reports, &mut output_writer)?;
                 main_pb.finish_with_message(format!(
                     "All checks passed! Report written to {}",
                     output.display()
@@ -350,7 +357,7 @@ pub fn run_check(
                     "An error occurred in {}. See report for details. Aborting due to fail-fast mode.",
                     failed_report.primary_path().display()
                 );
-                write_report(&[failed_report], output)?;
+                write_jsonl_report(&[failed_report], &mut output_writer)?;
                 main_pb
                     .abandon_with_message(format!("Error found. See report: {}", output.display()));
                 mpb.clear()?;
@@ -363,71 +370,137 @@ pub fn run_check(
     Ok(())
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub(crate) struct ReportRecord {
-    path: String,
-    status: String,
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct FastqReport<'a> {
+    path: &'a Path,
+    status: &'a str,
     num_records: Option<u64>,
     read_length: Option<usize>,
-    checksum: Option<String>,
-    errors: String,
-    warnings: String,
+    checksum: Option<&'a String>,
+    errors: Vec<String>,
+    warnings: &'a [String],
 }
 
-fn write_report(results: &[CheckResult], output_path: &Path) -> anyhow::Result<()> {
-    let mut writer = csv::WriterBuilder::default()
-        .delimiter(b'\t')
-        .from_path(output_path)?;
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct BamReport<'a> {
+    path: &'a Path,
+    status: &'a str,
+    num_records: Option<u64>,
+    checksum: Option<&'a String>,
+    errors: &'a [String],
+    warnings: &'a [String],
+}
 
-    let write_file_report = |w: &mut csv::Writer<fs::File>,
-                             report: &FileReport,
-                             is_part_of_failed_pair: bool|
-     -> anyhow::Result<()> {
-        let status = if report.is_ok() && !is_part_of_failed_pair {
-            "OK"
-        } else {
-            "ERROR"
-        };
-        let stats = report.stats.as_ref();
-        w.serialize(ReportRecord {
-            path: report.path.to_string_lossy().to_string(),
-            status: status.to_string(),
-            num_records: stats.map(|s| s.num_records),
-            read_length: stats.and_then(|s| s.read_length),
-            checksum: report.checksum.clone(),
-            errors: report.errors.join(";"),
-            warnings: report.warnings.join(";"),
-        })?;
-        Ok(())
-    };
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct RawReport<'a> {
+    path: &'a Path,
+    status: &'a str,
+    checksum: Option<&'a String>,
+    errors: &'a [String],
+    warnings: &'a [String],
+}
 
+#[derive(Debug, Serialize)]
+#[serde(tag = "check_type", content = "data", rename_all = "snake_case")]
+enum JsonReport<'a> {
+    Fastq(FastqReport<'a>),
+    Bam(BamReport<'a>),
+    Raw(RawReport<'a>),
+}
+
+fn write_jsonl_report<W: Write>(results: &[CheckResult], writer: &mut W) -> anyhow::Result<()> {
     for result in results {
         match result {
-            CheckResult::Paired(report) => {
-                let is_pair_error = !report.pair_errors.is_empty();
+            CheckResult::PairedFastq(pair_report) => {
+                let is_pair_error = !pair_report.pair_errors.is_empty();
 
-                let mut fq1_errors = report.fq1_report.errors.clone();
-                fq1_errors.extend(report.pair_errors.clone());
-                let temp_fq1_report = FileReport {
-                    errors: fq1_errors,
-                    ..report.fq1_report.clone()
+                // Process R1
+                let r1 = &pair_report.fq1_report;
+                let mut fq1_errors = r1.errors.clone();
+                if is_pair_error {
+                    fq1_errors.extend(pair_report.pair_errors.clone());
+                }
+                let status = if r1.is_ok() && !is_pair_error {
+                    "OK"
+                } else {
+                    "ERROR"
                 };
-                write_file_report(&mut writer, &temp_fq1_report, is_pair_error)?;
 
-                if let Some(fq2_report) = &report.fq2_report {
-                    let mut fq2_errors = fq2_report.errors.clone();
-                    fq2_errors.extend(report.pair_errors.clone());
-                    let temp_fq2_report = FileReport {
-                        errors: fq2_errors,
-                        ..fq2_report.clone()
+                let report1 = JsonReport::Fastq(FastqReport {
+                    path: &r1.path,
+                    status,
+                    num_records: r1.stats.map(|s| s.num_records),
+                    read_length: r1.stats.and_then(|s| s.read_length),
+                    checksum: r1.checksum.as_ref(),
+                    errors: fq1_errors,
+                    warnings: &r1.warnings,
+                });
+                serde_json::to_writer(&mut *writer, &report1)?;
+                writer.write_all(b"\n")?;
+
+                // Process R2, if it exists
+                if let Some(r2) = &pair_report.fq2_report {
+                    let mut fq2_errors = r2.errors.clone();
+                    if is_pair_error {
+                        fq2_errors.extend(pair_report.pair_errors.clone());
+                    }
+                    let status = if r2.is_ok() && !is_pair_error {
+                        "OK"
+                    } else {
+                        "ERROR"
                     };
-                    write_file_report(&mut writer, &temp_fq2_report, is_pair_error)?;
+
+                    let report2 = JsonReport::Fastq(FastqReport {
+                        path: &r2.path,
+                        status,
+                        num_records: r2.stats.map(|s| s.num_records),
+                        read_length: r2.stats.and_then(|s| s.read_length),
+                        checksum: r2.checksum.as_ref(),
+                        errors: fq2_errors,
+                        warnings: &r2.warnings,
+                    });
+                    serde_json::to_writer(&mut *writer, &report2)?;
+                    writer.write_all(b"\n")?;
                 }
             }
-
-            CheckResult::Single(report) => {
-                write_file_report(&mut writer, report, false)?;
+            CheckResult::SingleFastq(report) => {
+                let json_report = JsonReport::Fastq(FastqReport {
+                    path: &report.path,
+                    status: if report.is_ok() { "OK" } else { "ERROR" },
+                    num_records: report.stats.map(|s| s.num_records),
+                    read_length: report.stats.and_then(|s| s.read_length),
+                    checksum: report.checksum.as_ref(),
+                    errors: report.errors.clone(),
+                    warnings: &report.warnings,
+                });
+                serde_json::to_writer(&mut *writer, &json_report)?;
+                writer.write_all(b"\n")?;
+            }
+            CheckResult::Bam(report) => {
+                let json_report = JsonReport::Bam(BamReport {
+                    path: &report.path,
+                    status: if report.is_ok() { "OK" } else { "ERROR" },
+                    num_records: report.stats.map(|s| s.num_records),
+                    checksum: report.checksum.as_ref(),
+                    errors: &report.errors,
+                    warnings: &report.warnings,
+                });
+                serde_json::to_writer(&mut *writer, &json_report)?;
+                writer.write_all(b"\n")?;
+            }
+            CheckResult::Checksum(report) => {
+                let json_report = JsonReport::Raw(RawReport {
+                    path: &report.path,
+                    status: if report.is_ok() { "OK" } else { "ERROR" },
+                    checksum: report.checksum.as_ref(),
+                    errors: &report.errors,
+                    warnings: &report.warnings,
+                });
+                serde_json::to_writer(&mut *writer, &json_report)?;
+                writer.write_all(b"\n")?;
             }
         }
     }
@@ -442,12 +515,14 @@ mod tests {
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use noodles::bam;
+    use noodles::sam;
     use noodles::sam::alignment::io::Write as SamWrite;
     use noodles::sam::alignment::record::Flags;
     use noodles::sam::alignment::record_buf::QualityScores;
     use noodles::sam::header::record::value::map::ReadGroup;
-    use noodles::sam::{self as sam, Header, header::record::value::Map};
-    use std::io::Write;
+    use noodles::sam::{Header, header::record::value::Map};
+    use serde::Deserialize;
+    use std::io::{BufRead, BufReader, Write};
     use tempfile::tempdir;
 
     fn create_gzipped_fastq(path: &Path, content: &str) -> Result<()> {
@@ -514,20 +589,63 @@ mod tests {
         }
     }
 
-    fn read_report_records(report_path: &Path) -> Result<Vec<ReportRecord>> {
-        let mut reader = csv::ReaderBuilder::default()
-            .delimiter(b'\t')
-            .from_path(report_path)?;
+    #[derive(Deserialize, Debug, Clone)]
+    #[serde(rename_all = "snake_case")]
+    struct TestFastqReportData {
+        path: PathBuf,
+        status: String,
+        num_records: Option<u64>,
+        read_length: Option<usize>,
+        checksum: Option<String>,
+        errors: Vec<String>,
+        warnings: Vec<String>,
+    }
+
+    #[derive(Deserialize, Debug, Clone)]
+    #[serde(rename_all = "snake_case")]
+    struct TestBamReportData {
+        path: PathBuf,
+        status: String,
+        num_records: Option<u64>,
+        checksum: Option<String>,
+        errors: Vec<String>,
+        warnings: Vec<String>,
+    }
+
+    #[derive(Deserialize, Debug, Clone)]
+    #[serde(rename_all = "snake_case")]
+    struct TestRawReportData {
+        path: PathBuf,
+        status: String,
+        checksum: Option<String>,
+        errors: Vec<String>,
+        warnings: Vec<String>,
+    }
+
+    #[derive(Deserialize, Debug, Clone)]
+    #[serde(tag = "check_type", content = "data", rename_all = "snake_case")]
+    enum TestReport {
+        Fastq(TestFastqReportData),
+        Bam(TestBamReportData),
+        Raw(TestRawReportData),
+    }
+
+    fn read_jsonl_report(report_path: &Path) -> Result<Vec<TestReport>> {
+        let file = fs::File::open(report_path)?;
+        let reader = BufReader::new(file);
         reader
-            .deserialize()
-            .map(|r| r.map_err(|e| anyhow!(e)))
+            .lines()
+            .map(|line| {
+                let line = line?;
+                serde_json::from_str::<TestReport>(&line).map_err(|e| anyhow!(e))
+            })
             .collect()
     }
 
     #[test]
     fn test_valid_pair_with_different_lengths() -> Result<()> {
         let fixture = TestFiles::new()?;
-        let output = fixture.dir.join("report.tsv");
+        let output = fixture.dir.join("report.jsonl");
         let paired = vec![
             fixture.path_str("ok_r1.fastq.gz"),
             fixture.path_str("ok_r2_len5.fastq.gz"),
@@ -537,17 +655,35 @@ mod tests {
 
         run_check(paired, vec![], vec![], vec![], &output, false, Some(false))?;
 
-        let statuses = read_report_records(&output)?;
-        assert_eq!(statuses.len(), 2);
-        assert_eq!(statuses[0].status, "OK");
-        assert_eq!(statuses[1].status, "OK");
+        let mut records = read_jsonl_report(&output)?;
+        records.sort_by(|a, b| match (a, b) {
+            (TestReport::Fastq(d1), TestReport::Fastq(d2)) => d1.path.cmp(&d2.path),
+            _ => panic!("Unexpected report types"),
+        });
+
+        assert_eq!(records.len(), 2);
+        if let TestReport::Fastq(data) = &records[0] {
+            assert!(data.path.ends_with("ok_r1.fastq.gz"));
+            assert_eq!(data.status, "OK");
+            assert_eq!(data.read_length, Some(4));
+        } else {
+            panic!("Expected a Fastq report for R1");
+        }
+
+        if let TestReport::Fastq(data) = &records[1] {
+            assert!(data.path.ends_with("ok_r2_len5.fastq.gz"));
+            assert_eq!(data.status, "OK");
+            assert_eq!(data.read_length, Some(5));
+        } else {
+            panic!("Expected a Fastq report for R2");
+        }
         Ok(())
     }
 
     #[test]
     fn test_multiple_inputs_with_continue_on_error() -> Result<()> {
         let fixture = TestFiles::new()?;
-        let output = fixture.dir.join("report.tsv");
+        let output = fixture.dir.join("report.jsonl");
 
         let all_paired = vec![
             fixture.path_str("counts1.fastq.gz"),
@@ -572,18 +708,55 @@ mod tests {
             Some(false),
         )?;
 
-        let statuses = read_report_records(&output)?;
-        assert_eq!(statuses.len(), 5);
+        let records = read_jsonl_report(&output)?;
+        assert_eq!(records.len(), 5);
 
-        assert_eq!(statuses[0].path, fixture.path_str("counts1.fastq.gz"));
-        assert_eq!(statuses[0].status, "ERROR");
-        assert!(statuses[0].errors.contains("Mismatched read counts"));
+        let find_report = |recs: &[TestReport], suffix: &str| -> TestReport {
+            recs.iter()
+                .find(|r| match r {
+                    TestReport::Fastq(d) => d.path.ends_with(suffix),
+                    _ => false,
+                })
+                .unwrap_or_else(|| panic!("Report for file ending in '{}' not found", suffix))
+                .clone()
+        };
 
-        assert_eq!(statuses[2].path, fixture.path_str("ok_r1.fastq.gz"));
-        assert_eq!(statuses[2].status, "OK");
+        if let TestReport::Fastq(data) = find_report(&records, "counts1.fastq.gz") {
+            assert_eq!(data.status, "ERROR");
+            assert!(
+                data.errors
+                    .iter()
+                    .any(|e| e.contains("Mismatched read counts"))
+            );
+        }
 
-        assert_eq!(statuses[4].path, fixture.path_str("badlen.fastq.gz"));
-        assert_eq!(statuses[4].status, "ERROR");
+        if let TestReport::Fastq(data) = find_report(&records, "counts2.fastq.gz") {
+            assert_eq!(data.status, "ERROR");
+            assert!(
+                data.errors
+                    .iter()
+                    .any(|e| e.contains("Mismatched read counts"))
+            );
+        }
+
+        if let TestReport::Fastq(data) = find_report(&records, "badlen.fastq.gz") {
+            assert_eq!(data.status, "ERROR");
+            assert!(
+                data.errors
+                    .iter()
+                    .any(|e| e.contains("Found inconsistent read length"))
+            );
+        }
+
+        if let TestReport::Fastq(data) = find_report(&records, "ok_r1.fastq.gz") {
+            assert_eq!(data.status, "OK");
+            assert!(data.errors.is_empty());
+        }
+        if let TestReport::Fastq(data) = find_report(&records, "ok_r2.fastq.gz") {
+            assert_eq!(data.status, "OK");
+            assert!(data.errors.is_empty());
+        }
+
         Ok(())
     }
 
@@ -607,7 +780,7 @@ mod tests {
         writer.write_alignment_record(&header, &record)?;
         drop(writer);
 
-        let output = dir.path().join("report.tsv");
+        let output = dir.path().join("report.jsonl");
         let bam_input = vec![bam_path.to_string_lossy().to_string()];
 
         run_check(
@@ -620,15 +793,22 @@ mod tests {
             Some(false),
         )?;
 
-        let records = read_report_records(&output)?;
+        let records = read_jsonl_report(&output)?;
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].status, "OK");
-        assert_eq!(records[0].num_records, Some(1));
-        assert!(
-            records[0]
-                .warnings
-                .contains("Detected a header in BAM file")
-        );
+
+        if let TestReport::Bam(data) = &records[0] {
+            assert_eq!(data.status, "OK");
+            assert_eq!(data.num_records, Some(1));
+            assert!(data.errors.is_empty());
+            assert!(
+                data.warnings.iter().any(|w| w.contains(
+                    "Detected a header in BAM file, ensure it contains no private information!"
+                )),
+                "Expected to find BAM header warning"
+            );
+        } else {
+            panic!("Expected a Bam report");
+        }
         Ok(())
     }
 
@@ -641,7 +821,7 @@ mod tests {
 
         let expected_checksum = "cf57fcf9d6d7fb8fd7d8c30527c8f51026aa1d99ad77cc769dd0c757d4fe8667";
 
-        let output = dir.path().join("report.tsv");
+        let output = dir.path().join("report.jsonl");
         let checksum_input = vec![file_path.to_string_lossy().to_string()];
 
         run_check(
@@ -654,12 +834,15 @@ mod tests {
             Some(false),
         )?;
 
-        let records = read_report_records(&output)?;
+        let records = read_jsonl_report(&output)?;
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].status, "OK");
-        assert_eq!(records[0].errors, "");
-        assert_eq!(records[0].num_records, None);
-        assert_eq!(records[0].checksum.as_deref(), Some(expected_checksum));
+        if let TestReport::Raw(data) = &records[0] {
+            assert_eq!(data.status, "OK");
+            assert_eq!(data.checksum.as_deref(), Some(expected_checksum));
+            assert!(data.errors.is_empty());
+        } else {
+            panic!("Expected a Checksum report");
+        }
         Ok(())
     }
 }

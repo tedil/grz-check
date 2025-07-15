@@ -6,6 +6,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 mod fastq;
+mod progress;
 mod sha256;
 
 #[derive(Debug, clap::Parser)]
@@ -106,4 +107,3 @@ fn main() -> Result<()> {
 
     Ok(())
 }
-

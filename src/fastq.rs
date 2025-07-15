@@ -1,4 +1,5 @@
 use crate::EarlyExitError;
+use crate::progress::DualProgressReader;
 use crate::sha256::SharedHashingReader;
 use anyhow::Context;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -52,8 +53,13 @@ impl PairReport {
     }
 }
 
-fn check_single_fastq(path: &Path, length_check: ReadLengthCheck, pb: &ProgressBar) -> FileReport {
-    pb.set_message(
+fn check_single_fastq(
+    path: &Path,
+    length_check: ReadLengthCheck,
+    file_pb: &ProgressBar,
+    global_pb: &ProgressBar,
+) -> FileReport {
+    file_pb.set_message(
         path.file_name()
             .unwrap_or_default()
             .to_string_lossy()
@@ -72,9 +78,10 @@ fn check_single_fastq(path: &Path, length_check: ReadLengthCheck, pb: &ProgressB
         }
     };
     let hasher = Arc::new(Mutex::new(Sha256::new()));
-    let hashing_reader = SharedHashingReader::new(file, hasher.clone());
-    let progress_reader = pb.wrap_read(hashing_reader);
-    let decompressed_reader = match niffler::get_reader(Box::new(BufReader::new(progress_reader))) {
+    let hashing_reader = SharedHashingReader::new(BufReader::new(file), hasher.clone());
+    let progress_reader =
+        DualProgressReader::new(hashing_reader, file_pb.clone(), global_pb.clone());
+    let decompressed_reader = match niffler::get_reader(Box::new(progress_reader)) {
         Ok((reader, _)) => reader,
         Err(e) => {
             return FileReport {
@@ -328,13 +335,12 @@ pub fn run_check(
         let fq1_pb = m.add(ProgressBar::new(job.fq1_size));
         fq1_pb.set_style(style.clone());
         fq1_pb.set_prefix("Checking R1");
-        let fq1_report = check_single_fastq(&job.fq1, job.fq1_length_check, &fq1_pb);
+        let fq1_report = check_single_fastq(&job.fq1, job.fq1_length_check, &fq1_pb, main_pb);
         if fq1_report.is_ok() {
             fq1_pb.finish_with_message("✓ OK");
         } else {
             fq1_pb.abandon_with_message("✗ ERROR");
         }
-        main_pb.inc(job.fq1_size);
 
         let mut fq2_report = None;
         if let (Some(fq2_path), Some(fq2_size), Some(fq2_len_check)) =
@@ -343,13 +349,12 @@ pub fn run_check(
             let fq2_pb = m.add(ProgressBar::new(fq2_size));
             fq2_pb.set_style(style.clone());
             fq2_pb.set_prefix("Checking R2");
-            let report = check_single_fastq(fq2_path, fq2_len_check, &fq2_pb);
+            let report = check_single_fastq(fq2_path, fq2_len_check, &fq2_pb, main_pb);
             if report.is_ok() {
                 fq2_pb.finish_with_message("✓ OK");
             } else {
                 fq2_pb.abandon_with_message("✗ ERROR");
             }
-            main_pb.inc(fq2_size);
             fq2_report = Some(report);
         }
 
@@ -586,7 +591,7 @@ mod tests {
     fn read_report_status(report_path: &Path) -> Result<Vec<ReportRecord>> {
         let mut reader = csv::ReaderBuilder::default()
             .delimiter(b'\t')
-            .from_path(&report_path)?;
+            .from_path(report_path)?;
         reader
             .deserialize()
             .map(|r| r.map_err(|e| anyhow!(e)))
@@ -634,7 +639,6 @@ mod tests {
         run_check(all_paired, all_single, &output, true, Some(false))?;
 
         let statuses = read_report_status(&output)?;
-        dbg!(&statuses);
         assert_eq!(statuses.len(), 5);
 
         assert_eq!(statuses[0].path, fixture.path_str("counts1.fastq.gz"));
